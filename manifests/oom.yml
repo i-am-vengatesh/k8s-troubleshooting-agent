@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-app
+  namespace: agent-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: oom-app}
+  template:
+    metadata:
+      labels: {app: oom-app}
+    spec:
+      containers:
+      - name: app
+        image: polinux/stress
+        command: ["stress"]
+        args: ["--vm", "1", "--vm-bytes", "200M", "--vm-hang", "1"]
+        resources:
+          limits:
+            memory: 50Mi

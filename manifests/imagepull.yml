@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imagepull-app
+  namespace: agent-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: imagepull-app}
+  template:
+    metadata:
+      labels: {app: imagepull-app}
+    spec:
+      containers:
+      - name: app
+        image: nginx:this-tag-does-not-exist
