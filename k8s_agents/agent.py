@@ -1,19 +1,35 @@
-from google.adk.agents import Agent
-from .k8s_tools import (list_unhealthy_pods, get_pod_events,
-                        get_pod_logs, describe_pod_resources)
+from google.adk.agents import Agent, ParallelAgent, SequentialAgent
+from .troubleshooter import k8s_troubleshooter
+from .monitoring import monitoring_agent
 
-root_agent = Agent(
-    name="k8s_troubleshooter",
-    model="gemini-flash-latest",  # check the ADK docs for the current model name
-    description="Diagnoses Kubernetes workload problems.",
-    instruction="""You are a Kubernetes SRE. Investigate step by step:
-1. Call list_unhealthy_pods for the namespace.
-2. For each unhealthy pod, call get_pod_events.
-3. For crashing pods, call get_pod_logs with previous=True.
-4. For OOMKilled or scheduling issues, call describe_pod_resources.
-Report per pod: root cause, evidence from tool output, and a suggested fix.
-Never claim something the tool output does not show. You are read-only:
-suggest kubectl commands but never claim to have run them.""",
-    tools=[list_unhealthy_pods, get_pod_events,
-           get_pod_logs, describe_pod_resources],
+parallel_gather = ParallelAgent(
+    name="parallel_gather",
+    description="Runs the troubleshooter and monitoring agents at the same time.",
+    sub_agents=[k8s_troubleshooter, monitoring_agent],
+)
+
+rca_summarizer = Agent(
+    name="rca_summarizer",
+    model="gemini-3.8-flash",
+    description="Combines specialist findings into one root-cause report.",
+    instruction="""You write the incident report. Use only the findings below.
+
+Troubleshooter findings:
+{troubleshooter_findings}
+
+Monitoring findings:
+{monitoring_findings}
+
+Produce:
+1. Summary (2-3 sentences)
+2. Per workload: status, root cause, evidence, suggested fix
+3. Resource saturation issues that are not crashes
+Do not add facts that are not in the findings. If the two sources disagree,
+say so. Suggest kubectl commands but never claim to have run them.""",
+)
+
+root_agent = SequentialAgent(
+    name="incident_investigator",
+    description="Investigates a namespace with parallel specialists, then summarizes.",
+    sub_agents=[parallel_gather, rca_summarizer],
 )

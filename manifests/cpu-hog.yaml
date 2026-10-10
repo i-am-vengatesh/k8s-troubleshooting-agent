@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-hog-app
+  namespace: agent-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: cpu-hog-app}
+  template:
+    metadata:
+      labels: {app: cpu-hog-app}
+    spec:
+      containers:
+      - name: app
+        image: polinux/stress
+        command: ["stress"]
+        args: ["--cpu", "1"]
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
