@@ -192,6 +192,7 @@ All results are single runs reviewed by hand. There is no automated eval suite y
 - The agent's tools are read-only. `propose_remediation` writes to a local queue file and cannot touch the cluster.
 - Proposals are validated against allowlists (namespaces, actions, value formats) when queued **and again** at approval. Verified: a proposal in `kube-system` is rejected, and re-approving an applied proposal is refused.
 - A human must type `yes`. Every decision is appended to `remediation/audit.jsonl`.
+- Outcomes are verified by deterministic code, not by the LLM. After an approved change, `approve.py` watches the rollout and reports recovered or not recovered.
 - Tool output is truncated to limit token use, and logs and events are treated as untrusted input (they could contain prompt-injection text).
 - Least-privilege RBAC identity for in-cluster use (`get/list/watch` only).
 - The `.dockerignore` keeps `.env` out of the image, and the in-cluster key comes from a Kubernetes Secret.
@@ -208,7 +209,7 @@ All results are single runs reviewed by hand. There is no automated eval suite y
 - [ ] Alert-triggered investigation and Slack reporting (webhook token auth verified; the investigation run is not yet tested, and Alertmanager is not installed, so testing would use simulated payloads)
 - [ ] Shared approval queue so proposals made in-cluster can be approved from outside
 - [ ] ADK evals (an early eval set exists but is out of date)
-- [ ] Post-fix verification (re-check the workload after approval)
+- [x] Post-fix verification (deterministic check after approval; tested: 100Mi OOM fix reported NOT RECOVERED, 250Mi reported RECOVERED)
 - [ ] Tracing for the agents (OpenTelemetry, Langfuse, or Cloud Trace)
 
 ## 10. Troubleshooting log

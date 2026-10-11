@@ -72,5 +72,18 @@ An earlier, separate run queued `nginx:latest` for `imagepull-app` (id `4c72867c
 ## Limitations
 
 - One run per scenario, reviewed by hand.
-- The 250Mi result is a snapshot soon after the approval. Re-check after 18 minutes before calling it permanent.
+- The 250Mi fix was re-checked after 18 minutes (same pod, 0 restarts) and again by the verification step, but it is still one scenario and one run.
 - Free-tier model quotas (for example 20 requests per day per model) limit how often a full investigation can run.
+
+## Post-fix verification (added after the runs above)
+
+`approve.py` now watches the rollout after an approved change and reports `RECOVERED` or `NOT RECOVERED`. The check is plain code, not an LLM, and the outcome is stored in `remediation/audit.jsonl`.
+
+| Proposal | Result | Evidence |
+|---|---|---|
+| `oom-app` at 100Mi | NOT RECOVERED | pod `oom-app-7dff9cddb9-ntcs6`: restarts=1, last_kill=OOMKilled |
+| `oom-app` at 250Mi | RECOVERED | pod `oom-app-57b5fc8959-5psjg`: ready, restarts=0 for the 30s stability window |
+
+The 100Mi pod looked healthy at 17s (ready, 0 restarts) and was OOMKilled afterwards, which is why a stability window is required instead of stopping at the first ready reading.
+
+Limits: the check reads readiness and restart counts only. `oom-app` has no readiness probe, so "ready" means the container is running, and it does not prove the application behaves correctly. The check reports only and does not roll back.
