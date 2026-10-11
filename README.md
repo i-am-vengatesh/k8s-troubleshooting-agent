@@ -1,164 +1,120 @@
 # AI-Powered Kubernetes Troubleshooting Agent (POC)
 
-A proof-of-concept AI agent built with **Google ADK** that investigates unhealthy Kubernetes workloads using **read-only** tools, then reports the root cause, evidence, and a suggested fix.
+A multi-agent system built with **Google ADK** that investigates unhealthy Kubernetes workloads, summarizes the root cause, and proposes fixes that a **human must approve** before anything changes in the cluster.
 
-**Stack:** Python, Google ADK, Gemini (Google AI Studio), Kubernetes Python client, kind, Docker, WSL2
+**Stack:** Python, Google ADK, Gemini (Google AI Studio), Kubernetes Python client, metrics-server, kind, Docker, WSL2
 
-**Status:** Single-agent baseline working (3 of 3 test scenarios diagnosed). Monitoring agent and orchestrator are planned.
+**Status:** Working POC on a local kind cluster. Diagnosis, monitoring, remediation proposals, and the approval CLI are tested. The in-cluster deployment and alert webhook are written but **not yet tested** (see [Roadmap](#9-roadmap)).
 
-![ADK events trace](docs/images/adk-events-trace.png)
+![ADK multi-agent trace](docs/images/adk-multiagent-trace.png)
 
 ---
 
-## 1. Goals
+## 1. What it does
 
-- Apply AI agents to a real SRE/DevOps problem: first-line Kubernetes troubleshooting.
-- Keep the agent **safe**: read-only access, it suggests commands but never runs them.
-- Build incrementally: one agent with good tools first, then split into multiple agents.
+Ask it "What's wrong in the agent-test namespace?" and it:
+
+1. Runs a **troubleshooter** and a **monitoring** agent in parallel.
+2. Merges their findings into one incident report (**RCA summarizer**).
+3. Queues fix proposals for the clear cases (**remediation agent**), without executing anything.
+4. Waits for a human to review and apply a proposal with `approve.py`.
 
 ## 2. Architecture
 
-ADK's building blocks (agents, tools, sub-agents, workflow agents) map to this project as follows:
+```
+User question (or alert webhook)
+        │
+incident_investigator (SequentialAgent)
+ ├── parallel_gather (ParallelAgent)
+ │     ├── k8s_troubleshooter  → pod status, events, logs, resource specs
+ │     └── monitoring_agent    → node/pod CPU and memory via metrics-server
+ ├── rca_summarizer (LLM, no tools) → incident report
+ └── remediation_agent → queues proposals (cannot change the cluster)
+                              │
+                     human: python approve.py list / approve <id>
+                              │
+                     validated, confirmed, audit-logged cluster change
+```
+
+How ADK's building blocks map to this project:
 
 ![ADK concepts](docs/images/adk-concepts.png)
 
-**Current (implemented):**
+### Agents and models
 
-```
-User question
-     │
-k8s_troubleshooter (LLM agent)
-     ├── list_unhealthy_pods
-     ├── get_pod_events
-     ├── get_pod_logs
-     └── describe_pod_resources
-```
+Each agent has its own model setting in `k8s_agents/models.py`, so a single model's daily quota doesn't stop the whole pipeline. Override any of them with environment variables (`TROUBLESHOOTER_MODEL`, `MONITORING_MODEL`, `SUMMARIZER_MODEL`, `REMEDIATION_MODEL`, `AGENT_MODEL`).
 
-**Planned:**
+| Agent | Role | Tools | Default model |
+|---|---|---|---|
+| `k8s_troubleshooter` | Diagnoses failing pods | `list_unhealthy_pods`, `get_pod_events`, `get_pod_logs`, `describe_pod_resources` | `gemini-3-flash-preview` |
+| `monitoring_agent` | Finds resource saturation | `get_node_usage`, `get_pod_usage` | `gemini-3.1-flash-lite` |
+| `rca_summarizer` | Merges findings into one report | none | `gemini-3.5-flash-lite` |
+| `remediation_agent` | Queues fix proposals | `propose_remediation` | `gemini-3-flash-preview` |
 
-```
-Orchestrator (root agent)
- └── Incident workflow (Sequential)
-      ├── Parallel gather
-      │    ├── K8s Troubleshooter
-      │    ├── Monitoring Agent (metrics-server / Prometheus)
-      │    └── Logs Agent
-      ├── RCA Summarizer (LLM, no tools)
-      └── Remediation Agent (proposes fixes, human approval)
-```
+Model availability and free-tier quotas vary by key and change over time. Preview models can change or disappear, so check which models your key can use before relying on the defaults.
 
 ## 3. Project structure
 
 ```
-agent-development/
 ├── k8s_agents/
-│   ├── __init__.py        # from . import agent
-│   ├── agent.py           # agent definition
-│   ├── k8s_tools.py       # read-only Kubernetes tools
-│   └── .env               # GOOGLE_API_KEY (never commit)
-├── manifests/             # broken apps + RBAC for repeatable tests
-├── docs/
-│   ├── sample-output.md
-│   └── images/
-├── .gitignore
+│   ├── agent.py               # root SequentialAgent + summarizer
+│   ├── troubleshooter.py      # troubleshooter agent
+│   ├── monitoring.py          # monitoring agent
+│   ├── remediation.py         # remediation agent
+│   ├── k8s_tools.py           # read-only Kubernetes tools
+│   ├── monitoring_tools.py    # metrics-server tools
+│   ├── remediation_tools.py   # proposal-only queue + validation
+│   ├── models.py              # per-agent model settings
+│   └── .env                   # GOOGLE_API_KEY (never commit)
+├── approve.py                 # human approval CLI
+├── webhook.py                 # Alertmanager-style webhook (not yet tested)
+├── Dockerfile, requirements.txt, .dockerignore
+├── manifests/                 # broken test apps, agent Deployment
+├── docs/                      # sample outputs, run evidence, screenshots
 └── README.md
 ```
 
 ## 4. Prerequisites
 
-- Windows with **WSL2** (Ubuntu) and **Docker Desktop** (WSL integration enabled for your distro)
+- Windows with **WSL2** (Ubuntu) and **Docker Desktop** with WSL integration enabled for your distro
 - `kubectl` and `kind`
 - Python 3.10+
-- A free API key from [Google AI Studio](https://aistudio.google.com)
+- An API key from [Google AI Studio](https://aistudio.google.com)
 
-Keep the project in the Linux filesystem (`~/...`), not under `/mnt/c/...`. Docker, kind, and Python run much faster there.
+Keep the project in the Linux filesystem (`~/...`), not `/mnt/c/...`.
 
 ## 5. Setup
 
-### 5.1 Create the kind cluster
+### 5.1 Cluster and test workloads
 
 ```bash
 kind create cluster
-kubectl get nodes        # should show Ready
-```
-
-### 5.2 Deploy the broken test apps
-
-Namespace and three deliberately failing workloads, one per scenario. Save these under `manifests/`.
-
-```bash
 kubectl create namespace agent-test
 ```
 
-**Scenario 1: ImagePullBackOff** (`manifests/imagepull.yaml`)
+Apply the four scenario manifests in `manifests/` one by one (check the exact file names in your copy):
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: imagepull-app
-  namespace: agent-test
-spec:
-  replicas: 1
-  selector:
-    matchLabels: {app: imagepull-app}
-  template:
-    metadata:
-      labels: {app: imagepull-app}
-    spec:
-      containers:
-      - name: app
-        image: nginx:this-tag-does-not-exist
-```
+| Scenario | Workload | What goes wrong |
+|---|---|---|
+| CrashLoopBackOff | `crashloop-app` | Prints an error and exits with code 1 |
+| ImagePullBackOff | `imagepull-app` | Image tag `nginx:this-tag-does-not-exist` |
+| OOMKilled | `oom-app` | Allocates about 200M under a 50Mi limit |
+| CPU saturation | `cpu-hog-app` | Runs, but sits at its 200m CPU limit |
 
-**Scenario 2: OOMKilled** (`manifests/oom.yaml`)
+Don't apply the whole folder with `-f manifests/`, because it also contains the agent's own Deployment.
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: oom-app
-  namespace: agent-test
-spec:
-  replicas: 1
-  selector:
-    matchLabels: {app: oom-app}
-  template:
-    metadata:
-      labels: {app: oom-app}
-    spec:
-      containers:
-      - name: app
-        image: polinux/stress
-        command: ["stress"]
-        args: ["--vm", "1", "--vm-bytes", "200M", "--vm-hang", "1"]
-        resources:
-          limits:
-            memory: 50Mi
-```
-
-**Scenario 3: CrashLoopBackOff** (`manifests/crashloop.yaml`)
-
-An app that prints a startup message, logs `ERROR: Database connection failed`, and exits with code 1. Any container that exits non-zero on startup works.
-
-Apply and verify:
+### 5.2 metrics-server (for the monitoring agent)
 
 ```bash
-kubectl apply -f manifests/
-kubectl get pods -n agent-test
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch -n kube-system deployment metrics-server --type=json \
+  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+kubectl top nodes
 ```
 
-Expected statuses: `CrashLoopBackOff`, `ErrImagePull` (then `ImagePullBackOff`), and `CrashLoopBackOff` for the OOM pod.
+`--kubelet-insecure-tls` is needed on kind because kubelet certificates are self-signed. Metrics only exist for **running** containers, so crashing pods have none, which is why `cpu-hog-app` exists.
 
-Confirm the OOM pod's last termination reason:
-
-```bash
-kubectl describe pod -n agent-test -l app=oom-app | grep -A5 "Last State"
-```
-
-You should see `Reason: OOMKilled` and `Exit Code: 137` (SIGKILL, 128 + 9).
-
-### 5.3 Create a read-only identity (least privilege)
+### 5.3 Read-only identity (for in-cluster use)
 
 ```bash
 kubectl create serviceaccount agent-reader -n agent-test
@@ -168,246 +124,112 @@ kubectl create clusterrole agent-readonly \
 kubectl create clusterrolebinding agent-readonly \
   --clusterrole=agent-readonly \
   --serviceaccount=agent-test:agent-reader
+kubectl create clusterrole agent-metrics-readonly \
+  --verb=get,list --resource=pods.metrics.k8s.io,nodes.metrics.k8s.io
+kubectl create clusterrolebinding agent-metrics-readonly \
+  --clusterrole=agent-metrics-readonly \
+  --serviceaccount=agent-test:agent-reader
 ```
 
-Locally the agent uses your kubeconfig. This ServiceAccount is what it should use when later deployed in-cluster. Export these to `manifests/rbac.yaml` so a rebuild restores them.
+Locally the agent uses your kubeconfig. This ServiceAccount is what the in-cluster pod uses.
 
-### 5.4 Install ADK and create the agent
+### 5.4 Python environment
 
 ```bash
-cd ~/agent-development
 python3 -m venv .venv && source .venv/bin/activate
-pip install google-adk kubernetes
-adk create k8s_agents
+pip install google-adk kubernetes fastapi uvicorn
 ```
 
-Choices made in the `adk create` prompts:
-
-| Prompt | Choice | Why |
-|---|---|---|
-| Model | `gemini-3.8-flash` | Flash tier is fast, cheap, and good at tool calling |
-| Backend | Google AI | Only needs an API key, no GCP project or billing |
-
-The API key is stored in `k8s_agents/.env`:
+Put your key in `k8s_agents/.env` (see `.env.example`):
 
 ```
 GOOGLE_GENAI_USE_VERTEXAI=0
 GOOGLE_API_KEY=your-key-here
 ```
 
-Keep secrets out of git:
+### 5.5 Run
+
+From the repo root:
 
 ```bash
-printf ".env\n.venv/\n__pycache__/\n" > .gitignore
-```
-
-### 5.5 Tools: `k8s_agents/k8s_tools.py`
-
-```python
-from kubernetes import client, config
-
-try:
-    config.load_incluster_config()
-except config.ConfigException:
-    config.load_kube_config()
-
-v1 = client.CoreV1Api()
-MAX_LOG_CHARS = 3000
-
-
-def list_unhealthy_pods(namespace: str) -> dict:
-    """List pods in a namespace that are unhealthy, with the reason for each.
-
-    Args:
-        namespace: Kubernetes namespace to inspect.
-    """
-    result = []
-    for p in v1.list_namespaced_pod(namespace).items:
-        for cs in (p.status.container_statuses or []):
-            reason, detail = None, None
-            if cs.state.waiting:
-                reason = cs.state.waiting.reason
-                detail = cs.state.waiting.message
-            elif cs.state.terminated and cs.state.terminated.exit_code != 0:
-                reason = cs.state.terminated.reason
-            elif not cs.ready and p.status.phase == "Running":
-                reason = "NotReady"
-            if reason:
-                last = cs.last_state.terminated if cs.last_state else None
-                result.append({
-                    "pod": p.metadata.name,
-                    "container": cs.name,
-                    "reason": reason,
-                    "message": (detail or "")[:300],
-                    "restarts": cs.restart_count,
-                    "last_termination_reason": last.reason if last else None,
-                    "last_exit_code": last.exit_code if last else None,
-                })
-    return {"namespace": namespace, "unhealthy": result}
-
-
-def get_pod_events(namespace: str, pod: str) -> dict:
-    """Get the most recent events for a pod.
-
-    Args:
-        namespace: Kubernetes namespace.
-        pod: Pod name.
-    """
-    events = v1.list_namespaced_event(
-        namespace, field_selector=f"involvedObject.name={pod}").items
-    events.sort(key=lambda e: e.last_timestamp or e.event_time or e.metadata.creation_timestamp)
-    return {"pod": pod,
-            "events": [f"{e.type} {e.reason}: {e.message}"[:300] for e in events[-10:]]}
-
-
-def get_pod_logs(namespace: str, pod: str, previous: bool = False) -> dict:
-    """Get the last lines of a pod's logs. Use previous=True for a crashed container.
-
-    Args:
-        namespace: Kubernetes namespace.
-        pod: Pod name.
-        previous: If True, fetch logs from the previously terminated container.
-    """
-    try:
-        logs = v1.read_namespaced_pod_log(
-            pod, namespace, tail_lines=50, previous=previous)
-        return {"pod": pod, "previous": previous, "logs": logs[-MAX_LOG_CHARS:]}
-    except client.ApiException as e:
-        return {"pod": pod, "error": f"{e.status}: {e.reason}"}
-
-
-def describe_pod_resources(namespace: str, pod: str) -> dict:
-    """Get image, resource requests/limits, and node for a pod.
-
-    Args:
-        namespace: Kubernetes namespace.
-        pod: Pod name.
-    """
-    p = v1.read_namespaced_pod(pod, namespace)
-    return {
-        "node": p.spec.node_name,
-        "containers": [{
-            "name": c.name,
-            "image": c.image,
-            "limits": c.resources.limits,
-            "requests": c.resources.requests,
-        } for c in p.spec.containers],
-    }
-```
-
-Design notes:
-
-- **Read-only:** no function modifies the cluster.
-- **Trimmed output:** logs, events, and messages are truncated so the model is not flooded with tokens.
-- **Reads container state, not just pod phase:** a `CrashLoopBackOff` pod can report phase `Running`, and the real cause of an OOM crash lives in `last_state.terminated`.
-- **Docstrings matter:** ADK uses them as the tool descriptions the model sees.
-
-### 5.6 Agent: `k8s_agents/agent.py`
-
-```python
-from google.adk.agents import Agent
-from .k8s_tools import (list_unhealthy_pods, get_pod_events,
-                        get_pod_logs, describe_pod_resources)
-
-root_agent = Agent(
-    name="k8s_troubleshooter",
-    model="gemini-3.8-flash",
-    description="Diagnoses Kubernetes workload problems.",
-    instruction="""You are a Kubernetes SRE. Investigate step by step:
-1. Call list_unhealthy_pods for the namespace.
-2. For each unhealthy pod, call get_pod_events.
-3. For crashing pods, call get_pod_logs with previous=True.
-4. For OOMKilled or scheduling issues, call describe_pod_resources.
-Report per pod: root cause, evidence from tool output, and a suggested fix.
-Never claim something the tool output does not show. You are read-only:
-suggest kubectl commands but never claim to have run them.""",
-    tools=[list_unhealthy_pods, get_pod_events,
-           get_pod_logs, describe_pod_resources],
-)
-```
-
-`k8s_agents/__init__.py` must contain:
-
-```python
-from . import agent
-```
-
-### 5.7 Run
-
-From the folder that **contains** `k8s_agents/`:
-
-```bash
-source .venv/bin/activate
 adk web
 ```
 
-Open the printed URL (usually `http://localhost:8000`), select `k8s_agents`, and ask:
+Select `k8s_agents`, start a **New Session**, and ask: *What's wrong in the agent-test namespace?*
 
-> What's wrong in the agent-test namespace?
+## 6. Reviewing and approving fixes
 
-## 6. Results
+The remediation agent only writes proposals to `remediation/pending.json`. A human decides:
 
-The agent diagnosed all three scenarios. Full verbatim output: [docs/sample-output.md](docs/sample-output.md).
+```bash
+python approve.py list
+python approve.py approve <id>     # shows the action, asks you to type 'yes'
+python approve.py reject <id>
+```
 
-| Scenario | Root cause found | Evidence used |
+Run `approve.py` as a single command on its own line. If you paste several lines at once, the extra lines can be read as the answer to the confirmation prompt, which cancels the approval (the cancel is the safe outcome).
+
+## 7. Results
+
+| Run | Scenarios | Result |
 |---|---|---|
-| `crashloop-app` | App fails at startup (database connection error in logs) | Previous-container logs, BackOff events |
-| `imagepull-app` | Image tag does not exist | Pull-failure events |
-| `oom-app` | Exceeded 50Mi memory limit | `OOMKilled`, exit 137, resource limits |
+| Single agent | crashloop, imagepull, oom | 3 of 3 root causes correct ([sample](docs/sample-output.md)) |
+| Multi-agent | + cpu-hog saturation | 4 of 4 correct ([sample](docs/sample-output-multiagent.md)) |
+| Remediation | imagepull, oom | Fixes proposed, approved, and applied; recovery verified ([evidence](docs/remediation-run.md)) |
 
-**3 of 3 scenarios diagnosed correctly** (single run, manual review).
+All results are single runs reviewed by hand. There is no automated eval suite yet.
 
-Tool-call trajectory: `list_unhealthy_pods` first, then events, logs, and resource lookups in parallel, then the final answer (see the screenshot at the top).
+### Lessons learned
 
-## 7. Troubleshooting log (issues hit during the build)
-
-### Control plane restarting repeatedly (leader election lost)
-
-- **Symptom:** `kube-controller-manager` and `kube-scheduler` showed 200+ restarts.
-- **Evidence:** controller-manager logs showed lease renewal timing out against the API server (`context deadline exceeded`) followed by `leaderelection lost`.
-- **Likely cause:** slow API server / etcd, probably disk I/O pressure on WSL2 with a low memory cap (about 3.7GiB). This was not confirmed from the logs alone.
-- **Mitigation:** raised WSL2 resources in `C:\Users\<you>\.wslconfig`:
-
-  ```ini
-  [wsl2]
-  memory=6GB
-  processors=4
-  ```
-
-  then ran `wsl --shutdown`. The cluster was recreated and the manifests reapplied.
-
-### `kubectl` and `docker` not found after `wsl --shutdown`
-
-- **Cause:** both came from Docker Desktop's WSL integration, which detaches when WSL restarts.
-- **Fix:** start Docker Desktop, then enable **Settings → Resources → WSL Integration** for the Ubuntu distro, then open a fresh WSL terminal. If the kind container is stopped: `docker start kind-control-plane`.
-- **Hardening:** install `kubectl` directly so it no longer depends on Docker Desktop.
-
-### Other tips
-
-- Scale down the crash-looping app between tests to reduce API churn: `kubectl scale deploy crashloop-app -n agent-test --replicas=0`
-- Browse WSL files from Windows at `\\wsl$\Ubuntu\home\<user>`, or run `explorer.exe .` in the project folder.
+- **A plausible fix isn't necessarily a working one.** The first OOM proposal doubled the limit (50Mi to 100Mi). The app allocates about 200M, and the 100Mi pod was OOMKilled again (verified in the cluster).
+- **Agents can only reason from what the tools show.** The tool output hid the container's command and args. After adding them and telling the agents to size from evidence, the next proposal was 250Mi, and the pod ran with 0 restarts at 200Mi usage (re-checked after 18 minutes).
+- **Human approval caught the weak proposal** on a test workload, and the audit log recorded every decision.
+- **The agents correctly declined to guess** for the crashloop (an application or dependency error) and CPU saturation cases.
+- **Metrics only exist for running pods**, so crash scenarios need log and event tools, and saturation scenarios need monitoring tools.
 
 ## 8. Safety design
 
-- Read-only tools only; no create, patch, delete, or exec.
-- Least-privilege RBAC ServiceAccount (`get/list/watch`).
-- The agent suggests `kubectl` commands but never executes them.
-- Tool output is truncated to avoid token blowups.
-- Logs and events are treated as untrusted input (they could contain prompt-injection text).
+- The agent's tools are read-only. `propose_remediation` writes to a local queue file and cannot touch the cluster.
+- Proposals are validated against allowlists (namespaces, actions, value formats) when queued **and again** at approval. Verified: a proposal in `kube-system` is rejected, and re-approving an applied proposal is refused.
+- A human must type `yes`. Every decision is appended to `remediation/audit.jsonl`.
+- Tool output is truncated to limit token use, and logs and events are treated as untrusted input (they could contain prompt-injection text).
+- Least-privilege RBAC identity for in-cluster use (`get/list/watch` only).
+- The `.dockerignore` keeps `.env` out of the image, and the in-cluster key comes from a Kubernetes Secret.
 
 ## 9. Roadmap
 
-- [ ] Monitoring agent (metrics-server, then Prometheus tools)
-- [ ] Orchestrator with Parallel gather and Sequential RCA summary
-- [ ] Remediation agent with human approval (Slack or CLI)
-- [ ] ADK evals using the three scenarios as test cases
-- [ ] Deploy in-cluster using the read-only ServiceAccount
-- [ ] Alertmanager webhook trigger and Slack notifications
+- [x] Troubleshooter agent with read-only tools
+- [x] Monitoring agent (metrics-server)
+- [x] Parallel gather and sequential RCA summarizer
+- [x] Remediation agent with human approval, validation, and audit log
+- [x] Per-agent model settings
+- [ ] In-cluster deployment (Dockerfile and manifest written, not yet built or tested)
+- [ ] Alert webhook and Slack reporting (`webhook.py` written, not yet tested; Alertmanager is not installed, so testing would use simulated payloads)
+- [ ] Shared approval queue so proposals made in-cluster can be approved from outside
+- [ ] ADK evals (an early eval set exists but is out of date)
+- [ ] Post-fix verification (re-check the workload after approval)
 - [ ] Tracing for the agents (OpenTelemetry, Langfuse, or Cloud Trace)
 
-## 10. Limitations
+## 10. Troubleshooting log
 
-- POC only: tested on one local kind cluster with three synthetic failures.
-- Results come from a single run; LLM output varies between runs.
-- No automated evals yet.
-- Root causes are only as reliable as the logs and events the agent reads.
+**Control plane restarting repeatedly (leader election lost).** `kube-controller-manager` and `kube-scheduler` showed 200+ restarts, and logs showed lease renewals timing out against the API server. This is probably disk and memory pressure on WSL2 (not confirmed). Raising resources in `C:\Users\<you>\.wslconfig` helped, and the cluster was recreated from the manifests:
+
+```ini
+[wsl2]
+memory=6GB
+processors=4
+```
+
+**`kubectl` and `docker` missing after `wsl --shutdown`.** Both came from Docker Desktop's WSL integration. Fix: start Docker Desktop, enable **Settings → Resources → WSL Integration** for your distro, and open a fresh terminal.
+
+**Free-tier quota errors (429).** The Gemini free tier allowed 20 requests per day per model on this key, and one multi-agent investigation makes many model calls. Fixes: give each agent its own model, check the limits for your key, and run one investigation at a time. Temporary 503 `UNAVAILABLE` errors are Google-side load and clear on their own.
+
+**Stalled rollout after reapplying a manifest.** Reapplying a broken manifest over a fixed deployment starts a new bad pod, while Kubernetes keeps the healthy old one until the new one is Ready. Delete the deployment and apply the manifest again to reset a scenario.
+
+## 11. Limitations
+
+- POC only: one local kind cluster and four synthetic failures.
+- Single manual runs. LLM output varies between runs.
+- Free-tier quotas allow only a few full investigations a day.
+- Root causes are only as reliable as the logs, events, and metrics the agents read.
+- The in-cluster deployment, alert webhook, and shared approval queue are not finished.
