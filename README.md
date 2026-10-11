@@ -197,6 +197,7 @@ All results are single runs reviewed by hand. There is no automated eval suite y
 - Least-privilege RBAC identity for in-cluster use (`get/list/watch` only).
 - The `.dockerignore` keeps `.env` out of the image, and the in-cluster key comes from a Kubernetes Secret.
 - Verified permissions of the in-cluster identity with `kubectl auth can-i`: it can list pods, read pod logs, list events, and list nodes, and it cannot delete pods or patch deployments.
+- Verified the in-cluster identity with `kubectl auth can-i`: it can list pods, read pod logs, list events, and list nodes, and it cannot delete pods or patch deployments.
 
 ## 9. Roadmap
 
