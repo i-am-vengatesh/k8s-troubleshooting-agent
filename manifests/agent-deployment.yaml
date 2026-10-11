@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-agent
+  namespace: agent-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: k8s-agent}
+  template:
+    metadata:
+      labels: {app: k8s-agent}
+    spec:
+      serviceAccountName: agent-reader      # read-only identity
+      containers:
+      - name: agent
+        image: k8s-agent:0.1                # built locally, loaded into kind
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: GOOGLE_GENAI_USE_VERTEXAI
+          value: "0"
+        - name: GOOGLE_API_KEY
+          valueFrom:
+            secretKeyRef: {name: k8s-agent-secrets, key: GOOGLE_API_KEY}
+        - name: WEBHOOK_TOKEN
+          valueFrom:
+            secretKeyRef: {name: k8s-agent-secrets, key: WEBHOOK_TOKEN}
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef: {name: k8s-agent-secrets, key: SLACK_WEBHOOK_URL, optional: true}
+        - name: REMEDIATION_DIR
+          value: /tmp/remediation
+        readinessProbe:
+          httpGet: {path: /healthz, port: 8080}
+        resources:
+          requests: {cpu: 100m, memory: 256Mi}
+          limits: {cpu: 500m, memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-agent
+  namespace: agent-test
+spec:
+  selector: {app: k8s-agent}
+  ports:
+  - port: 8080
+    targetPort: 8080

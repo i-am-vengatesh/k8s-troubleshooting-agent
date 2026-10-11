@@ -1,6 +1,8 @@
+from .models import SUMMARIZER_MODEL
 from google.adk.agents import Agent, ParallelAgent, SequentialAgent
 from .troubleshooter import k8s_troubleshooter
 from .monitoring import monitoring_agent
+from .remediation import remediation_agent
 
 parallel_gather = ParallelAgent(
     name="parallel_gather",
@@ -10,7 +12,7 @@ parallel_gather = ParallelAgent(
 
 rca_summarizer = Agent(
     name="rca_summarizer",
-    model="gemini-3.8-flash",
+    model=SUMMARIZER_MODEL,
     description="Combines specialist findings into one root-cause report.",
     instruction="""You write the incident report. Use only the findings below.
 
@@ -26,10 +28,11 @@ Produce:
 3. Resource saturation issues that are not crashes
 Do not add facts that are not in the findings. If the two sources disagree,
 say so. Suggest kubectl commands but never claim to have run them.""",
+    output_key="rca_report",
 )
 
 root_agent = SequentialAgent(
     name="incident_investigator",
-    description="Investigates a namespace with parallel specialists, then summarizes.",
-    sub_agents=[parallel_gather, rca_summarizer],
+    description="Investigates a namespace, summarizes, then queues fix proposals.",
+    sub_agents=[parallel_gather, rca_summarizer, remediation_agent],
 )

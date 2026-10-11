@@ -1,9 +1,10 @@
+from .models import MONITORING_MODEL
 from google.adk.agents import Agent
 from .monitoring_tools import get_node_usage, get_pod_usage
 
 monitoring_agent = Agent(
     name="monitoring_agent",
-    model="gemini-3.8-flash",
+    model=MONITORING_MODEL,
     description="Analyzes CPU and memory usage of nodes and pods to find saturation, throttling risk, and resource pressure.",
     instruction="""You are a monitoring specialist for Kubernetes.
 Call get_node_usage and get_pod_usage for the namespace.

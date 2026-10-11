@@ -85,5 +85,7 @@ def describe_pod_resources(namespace: str, pod: str) -> dict:
             "image": c.image,
             "limits": c.resources.limits,
             "requests": c.resources.requests,
+            "command": c.command,
+            "args": c.args,
         } for c in p.spec.containers],
     }
