@@ -4,7 +4,7 @@ A multi-agent system built with **Google ADK** that investigates unhealthy Kuber
 
 **Stack:** Python, Google ADK, Gemini (Google AI Studio), Kubernetes Python client, metrics-server, kind, Docker, WSL2
 
-**Status:** Working POC on a local kind cluster. Diagnosis, monitoring, remediation proposals, and the approval CLI are tested. The in-cluster deployment and alert webhook are written but **not yet tested** (see [Roadmap](#9-roadmap)).
+**Status:** Working POC on a local kind cluster. Diagnosis, monitoring, remediation proposals, and the approval CLI are tested. The in-cluster deployment (pod, health check, token auth) is verified, and the alert-triggered investigation is written but **not yet tested** (see [Roadmap](#9-roadmap)).
 
 ![ADK multi-agent trace](docs/images/adk-multiagent-trace.png)
 
@@ -195,6 +195,7 @@ All results are single runs reviewed by hand. There is no automated eval suite y
 - Tool output is truncated to limit token use, and logs and events are treated as untrusted input (they could contain prompt-injection text).
 - Least-privilege RBAC identity for in-cluster use (`get/list/watch` only).
 - The `.dockerignore` keeps `.env` out of the image, and the in-cluster key comes from a Kubernetes Secret.
+- Verified permissions of the in-cluster identity with `kubectl auth can-i`: it can list pods, read pod logs, list events, and list nodes, and it cannot delete pods or patch deployments.
 
 ## 9. Roadmap
 
@@ -203,8 +204,8 @@ All results are single runs reviewed by hand. There is no automated eval suite y
 - [x] Parallel gather and sequential RCA summarizer
 - [x] Remediation agent with human approval, validation, and audit log
 - [x] Per-agent model settings
-- [ ] In-cluster deployment (Dockerfile and manifest written, not yet built or tested)
-- [ ] Alert webhook and Slack reporting (`webhook.py` written, not yet tested; Alertmanager is not installed, so testing would use simulated payloads)
+- [x] In-cluster deployment (image built and loaded into kind; pod Running under a read-only ServiceAccount; /healthz and token checks verified)
+- [ ] Alert-triggered investigation and Slack reporting (webhook token auth verified; the investigation run is not yet tested, and Alertmanager is not installed, so testing would use simulated payloads)
 - [ ] Shared approval queue so proposals made in-cluster can be approved from outside
 - [ ] ADK evals (an early eval set exists but is out of date)
 - [ ] Post-fix verification (re-check the workload after approval)
@@ -232,4 +233,4 @@ processors=4
 - Single manual runs. LLM output varies between runs.
 - Free-tier quotas allow only a few full investigations a day.
 - Root causes are only as reliable as the logs, events, and metrics the agents read.
-- The in-cluster deployment, alert webhook, and shared approval queue are not finished.
+- The alert-triggered investigation and the shared approval queue are not finished or tested.
