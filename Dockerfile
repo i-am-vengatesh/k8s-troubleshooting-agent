@@ -7,4 +7,5 @@ COPY webhook.py .
 RUN useradd -m app && chown -R app /app
 USER app
 EXPOSE 8080
+ENV PYTHONUNBUFFERED=1
 CMD ["uvicorn", "webhook:app", "--host", "0.0.0.0", "--port", "8080"]

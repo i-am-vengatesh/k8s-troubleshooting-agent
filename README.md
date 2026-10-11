@@ -4,7 +4,7 @@ A multi-agent system built with **Google ADK** that investigates unhealthy Kuber
 
 **Stack:** Python, Google ADK, Gemini (Google AI Studio), Kubernetes Python client, metrics-server, kind, Docker, WSL2
 
-**Status:** Working POC on a local kind cluster. Diagnosis, monitoring, remediation proposals, and the approval CLI are tested. The in-cluster deployment (pod, health check, token auth) is verified, and the alert-triggered investigation is written but **not yet tested** (see [Roadmap](#9-roadmap)).
+**Status:** Working POC on a local kind cluster. Diagnosis, monitoring, remediation proposals, and the approval CLI are tested. The in-cluster deployment (pod, health check, token auth) is verified, and the alert-triggered investigation was tested once with a simulated alert (Slack reporting is **not yet tested**) (see [Roadmap](#9-roadmap)).
 
 ![ADK multi-agent trace](docs/images/adk-multiagent-trace.png)
 
@@ -67,7 +67,7 @@ Model availability and free-tier quotas vary by key and change over time. Previe
 │   ├── models.py              # per-agent model settings
 │   └── .env                   # GOOGLE_API_KEY (never commit)
 ├── approve.py                 # human approval CLI
-├── webhook.py                 # Alertmanager-style webhook (not yet tested)
+├── webhook.py                 # Alertmanager-style webhook (tested with a simulated alert)
 ├── Dockerfile, requirements.txt, .dockerignore
 ├── manifests/                 # broken test apps, agent Deployment
 ├── docs/                      # sample outputs, run evidence, screenshots
@@ -176,6 +176,7 @@ Run `approve.py` as a single command on its own line. If you paste several lines
 | Single agent | crashloop, imagepull, oom | 3 of 3 root causes correct ([sample](docs/sample-output.md)) |
 | Multi-agent | + cpu-hog saturation | 4 of 4 correct ([sample](docs/sample-output-multiagent.md)) |
 | Remediation | imagepull, oom | Fixes proposed, approved, and applied; recovery verified ([evidence](docs/remediation-run.md)) |
+| Alert-triggered (in-cluster) | simulated alert, all 4 scenarios | Report and 2 fix proposals produced in-cluster; one unsupported causal claim noted ([evidence](docs/alert-run.md)) |
 
 All results are single runs reviewed by hand. There is no automated eval suite yet.
 
@@ -186,6 +187,7 @@ All results are single runs reviewed by hand. There is no automated eval suite y
 - **Human approval caught the weak proposal** on a test workload, and the audit log recorded every decision.
 - **The agents correctly declined to guess** for the crashloop (an application or dependency error) and CPU saturation cases.
 - **Metrics only exist for running pods**, so crash scenarios need log and event tools, and saturation scenarios need monitoring tools.
+- **A lite summarizer can invent causal links.** In the in-cluster alert run, the report blamed the `PodCrashLooping` alert on CPU saturation, which nothing in the findings supported. The summarizer prompt now forbids unstated causal links, but a human still needs to read the report.
 
 ## 8. Safety design
 
@@ -207,7 +209,8 @@ All results are single runs reviewed by hand. There is no automated eval suite y
 - [x] Remediation agent with human approval, validation, and audit log
 - [x] Per-agent model settings
 - [x] In-cluster deployment (image built and loaded into kind; pod Running under a read-only ServiceAccount; /healthz and token checks verified)
-- [ ] Alert-triggered investigation and Slack reporting (webhook token auth verified; the investigation run is not yet tested, and Alertmanager is not installed, so testing would use simulated payloads)
+- [x] Alert-triggered investigation (tested once with a simulated Alertmanager payload; report printed to the pod logs, see docs/alert-run.md)
+- [ ] Slack reporting (code written, not tested: no webhook URL configured)
 - [ ] Shared approval queue so proposals made in-cluster can be approved from outside
 - [ ] ADK evals (an early eval set exists but is out of date)
 - [x] Post-fix verification (deterministic check after approval; tested: 100Mi OOM fix reported NOT RECOVERED, 250Mi reported RECOVERED)

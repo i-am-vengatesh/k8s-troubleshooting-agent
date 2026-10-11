@@ -26,7 +26,7 @@ Produce:
 1. Summary (2-3 sentences)
 2. Per workload: status, root cause, evidence, suggested fix
 3. Resource saturation issues that are not crashes
-Do not add facts that are not in the findings. If the two sources disagree,
+Do not add facts or causal links that are not in the findings (for example, do not blame an alert on a workload unless the findings say so). If the two sources disagree,
 say so. Suggest kubectl commands but never claim to have run them.""",
     output_key="rca_report",
 )
